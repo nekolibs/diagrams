@@ -1,0 +1,1 @@
+export { FunnelDiagram } from './FunnelDiagram'

@@ -1,0 +1,1 @@
+export { PyramidDiagram } from './PyramidDiagram'

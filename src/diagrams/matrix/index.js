@@ -1,0 +1,1 @@
+export { MatrixDiagram } from './MatrixDiagram'

@@ -1,0 +1,37 @@
+{
+  "name": "@neko-os/diagrams",
+  "version": "0.1.0",
+  "author": "Christian Storch <ccstorch@gmail.com>",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "react-native": "src/index.js",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && babel src --out-dir dist --extensions \".js,.jsx\" --copy-files",
+    "watch": "babel src --out-dir dist --extensions \".js,.jsx\" --copy-files --watch",
+    "dev": "yarn build && yarn watch",
+    "prepublishOnly": "yarn build",
+    "release": "npm publish --access public"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@neko-os/charts": "*",
+    "@neko-os/ui": "*",
+    "react": "*",
+    "react-native": "*"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^1.1.8",
+    "tinycolor2": "^1.6.0"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7",
+    "@babel/core": "^7",
+    "metro-react-native-babel-preset": "^0.77.0"
+  }
+}

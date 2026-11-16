@@ -1,0 +1,1 @@
+export { FishboneDiagram } from './FishboneDiagram'

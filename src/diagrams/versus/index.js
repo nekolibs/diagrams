@@ -1,0 +1,1 @@
+export { VersusDiagram } from './VersusDiagram'
