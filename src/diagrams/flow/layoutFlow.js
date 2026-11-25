@@ -1,11 +1,28 @@
 import { runDagre } from '../../_helpers/dagre'
 import { boxesOverlap } from '../../_helpers/geometry'
 import { findBackEdges, normalizeGraph } from '../../_helpers/graph'
-import { lineHeightOf, textWidth } from '../../_helpers/text'
+import { lineHeightOf, linesWidth, wrapText } from '../../_helpers/text'
 import { flowNodeStyle, flowNodeType, sizeFlowNode } from './flowNodes'
 
 const MARGIN = 2
+const ARROW = 6
 const YES = /^(yes|y|true|ok|sim|s[ií]|oui|ja)\b/i
+
+function flowSpacing(theme, tight, tallestLabel) {
+  const { spaces } = theme
+  const fork = spaces.md
+  return {
+    fork,
+    nodesep: tight ? spaces.lg : spaces.xl,
+    rank: spaces.xxl,
+    rankLabel: Math.max(spaces.xxl + spaces.sm, fork + tallestLabel + spaces.sm * 2),
+    gutter: spaces.lg,
+    sideGap: (labelW) => {
+      if (!labelW) return tight ? spaces.lg + spaces.xs : spaces.xl + spaces.xs
+      return labelW + (tight ? spaces.sm : spaces.md) * 2 + ARROW
+    },
+  }
+}
 
 const port = {
   top: (n) => ({ x: n.x, y: n.y - n.height / 2 }),
@@ -14,14 +31,15 @@ const port = {
   right: (n) => ({ x: n.x + n.width / 2, y: n.y }),
 }
 
-function stepify(points) {
+function stepify(points, turnAt) {
   const result = [points[0]]
   for (let i = 1; i < points.length; i++) {
     const a = result[result.length - 1]
     const b = points[i]
     if (Math.abs(a.x - b.x) > 1) {
       const mid = (a.y + b.y) / 2
-      result.push({ x: a.x, y: mid }, { x: b.x, y: mid })
+      const turn = points.length === 2 && turnAt != null ? turnAt : mid
+      result.push({ x: a.x, y: turn }, { x: b.x, y: turn })
     }
     result.push(b)
   }
@@ -71,8 +89,8 @@ function bounds(items) {
   return { ...box, width: box.maxX - box.minX, height: box.maxY - box.minY }
 }
 
-function placeNodes(graph, sized, width, theme) {
-  const { spaces, fonts } = theme
+function placeNodes(graph, sized, width, theme, spacing, labels) {
+  const { spaces } = theme
   const avail = width - MARGIN * 2
   let sides = findSideLeaves(graph)
 
@@ -90,8 +108,8 @@ function placeNodes(graph, sized, width, theme) {
     const result = runDagre({
       nodes: coreIds.map((id) => sized[id]),
       edges: dagreEdges,
-      nodesep: spaces.lg,
-      ranksep: hasLabels ? spaces.lg + spaces.xs : spaces.lg,
+      nodesep: spacing.nodesep,
+      ranksep: hasLabels ? spacing.rankLabel : spacing.rank,
       edgesep: spaces.sm,
     })
     const routes = {}
@@ -103,7 +121,7 @@ function placeNodes(graph, sized, width, theme) {
       const parent = boxes.find((box) => box.id === info.parent)
       if (!parent) return dropped.push(id)
       const node = sized[id]
-      const gap = Math.max(spaces.lg + spaces.xs, textWidth(graph.edges[info.edgeIndex].label, fonts.small) + spaces.sm)
+      const gap = spacing.sideGap(labels[info.edgeIndex].width)
       const tryPlace = (dir) => {
         const box = { ...node, x: parent.x + dir * (parent.width / 2 + gap + node.width / 2), y: parent.y, sideDir: dir }
         const all = bounds([...boxes, box].map((b) => [b.x - b.width / 2, 0, b.x + b.width / 2, 0]))
@@ -123,11 +141,35 @@ function placeNodes(graph, sized, width, theme) {
   return null
 }
 
-function routeEdges(graph, boxes, routes, sides, theme) {
-  const { spaces, fonts } = theme
-  const labelLH = lineHeightOf(fonts.small)
+function routeEdges(graph, boxes, routes, sides, theme, spacing, labels) {
+  const { spaces } = theme
   const byId = {}
   boxes.forEach((box) => (byId[box.id] = box))
+  const coreOut = {}
+  const coreIn = {}
+  graph.edges.forEach((edge, index) => {
+    if (graph.back.has(index) || sides[edge.to]?.edgeIndex === index || edge.from === edge.to) return
+    coreOut[edge.from] = (coreOut[edge.from] || 0) + 1
+    coreIn[edge.to] = (coreIn[edge.to] || 0) + 1
+  })
+  const contentLeft = Math.min(...boxes.map((box) => box.x - box.width / 2))
+  const contentRight = Math.max(...boxes.map((box) => box.x + box.width / 2))
+  const placedLabels = []
+  const labelRect = (pos, size) => {
+    const x0 = pos.anchor === 'start' ? pos.x : pos.anchor === 'end' ? pos.x - size.width : pos.x - size.width / 2
+    return { x: x0 + size.width / 2, y: pos.y, width: size.width, height: size.height }
+  }
+  const isFree = (rect) =>
+    !boxes.some((box) => boxesOverlap(box, rect, spaces.xxs)) &&
+    !placedLabels.some((other) => boxesOverlap(other, rect, spaces.xs))
+  const isInside = (rect) => rect.x - rect.width / 2 >= contentLeft && rect.x + rect.width / 2 <= contentRight
+  const beside = (x, y0, y1, size) => {
+    const y = (y0 + y1) / 2
+    const options = [1, -1].map((side) => ({ x: x + side * spaces.sm, y, anchor: side > 0 ? 'start' : 'end' }))
+    const rects = options.map((pos) => labelRect(pos, size))
+    const pick = [0, 1].find((i) => isFree(rects[i]) && isInside(rects[i])) ?? [0, 1].find((i) => isFree(rects[i])) ?? 0
+    return options[pick]
+  }
   const gutters = { 1: 0, '-1': 0 }
   const crosses = (p, targetX, exclude) =>
     boxes.some(
@@ -138,20 +180,19 @@ function routeEdges(graph, boxes, routes, sides, theme) {
         Math.max(p.x, targetX) > box.x - box.width / 2
     )
   const rowBlocked = (u, targetX) => crosses(u, targetX, [u.id])
-  const centerX =
-    (Math.min(...boxes.map((box) => box.x - box.width / 2)) + Math.max(...boxes.map((box) => box.x + box.width / 2))) / 2
+  const centerX = (contentLeft + contentRight) / 2
   const span = (n) => (n.shape === 'diamond' ? [n.x - n.width * 0.15, n.x + n.width * 0.15] : [n.x - n.width / 2 + spaces.sm, n.x + n.width / 2 - spaces.sm])
   const edgeY = (n, x, sign) => {
     const reach = n.shape === 'diamond' ? (n.height / 2) * (1 - Math.abs(x - n.x) / (n.width / 2)) : n.height / 2
     return n.y + sign * reach
   }
-  const gutterLabel = (gx, dir, y0, y1, labelW) => {
-    const top = Math.min(y0, y1) + labelLH
-    const bottom = Math.max(y0, y1) - labelLH
+  const gutterLabel = (gx, dir, y0, y1, size) => {
+    const top = Math.min(y0, y1) + size.height
+    const bottom = Math.max(y0, y1) - size.height
     const mid = (y0 + y1) / 2
-    const x0 = dir > 0 ? gx - 4 - labelW : gx + 4
+    const x0 = dir > 0 ? gx - 4 - size.width : gx + 4
     const free = (y) =>
-      !boxes.some((box) => boxesOverlap(box, { x: x0 + labelW / 2, y, width: labelW + 4, height: labelLH }, 2))
+      !boxes.some((box) => boxesOverlap(box, { x: x0 + size.width / 2, y, width: size.width + 4, height: size.height }, 2))
     for (let step = 0; mid - step >= top || mid + step <= bottom; step += 6) {
       for (const y of [mid - step, mid + step]) {
         if (y >= top && y <= bottom && free(y)) return { x: dir > 0 ? gx - 4 : gx + 4, y, anchor: dir > 0 ? 'end' : 'start' }
@@ -173,8 +214,8 @@ function routeEdges(graph, boxes, routes, sides, theme) {
       const u = byId[edge.from]
       const v = byId[edge.to]
       if (!u || !v) return null
-      const label = edge.label
-      const labelW = textWidth(label, fonts.small)
+      const size = labels[index]
+      const label = size.lines.length > 0
       let points
       let labelPos = null
 
@@ -183,7 +224,7 @@ function routeEdges(graph, boxes, routes, sides, theme) {
         const a = dir > 0 ? port.right(u) : port.left(u)
         const b = dir > 0 ? port.left(v) : port.right(v)
         points = [a, b]
-        if (label) labelPos = { x: (a.x + b.x) / 2, y: a.y - labelLH / 2 - 1, anchor: 'middle' }
+        if (label) labelPos = { x: (a.x + b.x - dir * ARROW) / 2, y: a.y - size.height / 2 - spaces.xxs, anchor: 'middle' }
       } else if (edge.from === edge.to) {
         const r = port.right(u)
         const loop = spaces.md
@@ -202,7 +243,7 @@ function routeEdges(graph, boxes, routes, sides, theme) {
         const plan = (dir) => {
           const outer =
             dir > 0 ? Math.max(...between.map((box) => box.x + box.width / 2)) : Math.min(...between.map((box) => box.x - box.width / 2))
-          const gx = outer + dir * (spaces.md + gutters[dir] * spaces.sm)
+          const gx = outer + dir * (spacing.gutter + gutters[dir] * spaces.sm)
           const a = dir > 0 ? port.right(u) : port.left(u)
           const b = dir > 0 ? port.right(v) : port.left(v)
           return { dir, gx, a, b, blocked: crosses(a, gx, [u.id, v.id]) || crosses(b, gx, [u.id, v.id]) }
@@ -212,50 +253,78 @@ function routeEdges(graph, boxes, routes, sides, theme) {
         const { dir, gx, a, b } = options.find((option) => !option.blocked) || options[0]
         gutters[dir] += 1
         points = [a, { x: gx, y: a.y }, { x: gx, y: b.y }, b]
-        if (label) labelPos = gutterLabel(gx, dir, a.y, b.y, labelW)
+        if (label) labelPos = gutterLabel(gx, dir, a.y, b.y, size)
       } else {
-        const interior = (routes[index]?.points || []).slice(1, -1)
+        const adjacent = u.rank != null && v.rank != null && Math.abs(v.rank - u.rank) <= 2
+        const interior = adjacent ? [] : (routes[index]?.points || []).slice(1, -1)
         const dx = v.x - u.x
-        const column = interior.length ? null : sharedColumn(u, v)
+        const oneToOne = (coreOut[u.id] || 0) <= 1 && (coreIn[v.id] || 0) <= 1
+        const column = interior.length || !oneToOne ? null : sharedColumn(u, v)
         const useElbow =
           column == null && u.shape === 'diamond' && !interior.length && Math.abs(dx) > u.width / 2 + spaces.xs && !rowBlocked(u, v.x)
         if (column != null) {
+          const top = edgeY(u, column, 1)
+          const bottom = edgeY(v, column, -1)
           points = [
-            { x: column, y: edgeY(u, column, 1) },
-            { x: column, y: edgeY(v, column, -1) },
+            { x: column, y: top },
+            { x: column, y: bottom },
           ]
+          if (label) labelPos = beside(column, top, bottom, size)
         } else if (useElbow) {
           const a = dx > 0 ? port.right(u) : port.left(u)
-          points = [a, { x: v.x, y: u.y }, port.top(v)]
-          if (label) labelPos = { x: a.x + Math.sign(dx) * (labelW / 2 + spaces.xs), y: u.y - labelLH / 2 - 1, anchor: 'middle' }
+          const end = port.top(v)
+          points = [a, { x: v.x, y: u.y }, end]
+          if (label) {
+            const dir = Math.sign(dx)
+            const leg = Math.abs(v.x - a.x)
+            const y = u.y - size.height / 2 - spaces.xxs
+            const above =
+              leg >= size.width + spaces.xs * 2
+                ? { x: (a.x + v.x) / 2, y, anchor: 'middle' }
+                : { x: a.x + dir * spaces.xs, y, anchor: dir > 0 ? 'start' : 'end' }
+            const aboveRect = labelRect(above, size)
+            labelPos = isFree(aboveRect) && isInside(aboveRect) ? above : beside(v.x, u.y, end.y, size)
+          }
         } else {
-          points = stepify([port.bottom(u), ...interior, port.top(v)])
-        }
-        if (label && !labelPos) {
-          const end = points[points.length - 1]
-          const before = points[points.length - 2]
-          labelPos = { x: end.x + spaces.xs, y: (before.y + end.y) / 2, anchor: 'start' }
+          const start = port.bottom(u)
+          const end = port.top(v)
+          const merge = (coreIn[v.id] || 0) > 1 && (coreOut[u.id] || 0) <= 1
+          const turnAt = merge ? end.y - spacing.fork : start.y + spacing.fork
+          points = stepify([start, ...interior, end], end.y - start.y > spacing.fork * 2 ? turnAt : null)
+          if (label) {
+            const before = points[points.length - 2]
+            labelPos = beside(end.x, before.y, end.y, size)
+          }
         }
       }
 
-      return { points, label, labelW, labelPos, dashed: !!edge.dashed }
+      if (labelPos) placedLabels.push(labelRect(labelPos, size))
+      return { points, labelLines: size.lines, labelW: size.width, labelH: size.height, labelPos, dashed: !!edge.dashed }
     })
     .filter(Boolean)
 }
 
-function attempt(graph, maxW, width, theme) {
+function attempt(graph, maxW, width, theme, tight) {
+  const { fonts } = theme
+  const labelLH = lineHeightOf(fonts.small)
+  const labelMax = Math.min(Math.max(width * 0.3, 70), 140)
+  const labels = graph.edges.map((edge) => {
+    const lines = wrapText(edge.label, labelMax, fonts.small, 400, 3)
+    return { lines, width: linesWidth(lines, fonts.small), height: lines.length * labelLH }
+  })
+  const tallest = Math.max(0, ...labels.filter((_, index) => !graph.back.has(index)).map((label) => label.height))
+  const spacing = flowSpacing(theme, tight, tallest)
   const sized = {}
-  graph.nodes.forEach((node) => (sized[node.id] = { ...node, ...sizeFlowNode(node, maxW, theme) }))
-  const placed = placeNodes(graph, sized, width, theme)
-  const edges = routeEdges(graph, placed.boxes, placed.routes, placed.sides, theme)
-  const labelLH = lineHeightOf(theme.fonts.small)
+  graph.nodes.forEach((node) => (sized[node.id] = { ...node, ...sizeFlowNode(node, maxW, theme, tight) }))
+  const placed = placeNodes(graph, sized, width, theme, spacing, labels)
+  const edges = routeEdges(graph, placed.boxes, placed.routes, placed.sides, theme, spacing, labels)
   const parts = placed.boxes.map((b) => [b.x - b.width / 2, b.y - b.height / 2, b.x + b.width / 2, b.y + b.height / 2])
   edges.forEach((edge) => {
     edge.points.forEach((p) => parts.push([p.x, p.y, p.x, p.y]))
     if (!edge.labelPos) return
     const { x, y, anchor } = edge.labelPos
     const x0 = anchor === 'start' ? x : anchor === 'end' ? x - edge.labelW : x - edge.labelW / 2
-    parts.push([x0, y - labelLH / 2, x0 + edge.labelW, y + labelLH / 2])
+    parts.push([x0, y - edge.labelH / 2, x0 + edge.labelW, y + edge.labelH / 2])
   })
   return { boxes: placed.boxes, edges, bbox: bounds(parts) }
 }
@@ -265,8 +334,15 @@ export function layoutFlow(props, width, theme) {
   if (!graph) return null
   const avail = width - MARGIN * 2
   let result = null
-  for (const factor of [0.62, 0.5, 0.42, 0.36]) {
-    const next = attempt(graph, Math.min(width * factor, 230), width, theme)
+  for (const [factor, tight] of [
+    [0.62, false],
+    [0.5, false],
+    [0.42, false],
+    [0.36, false],
+    [0.36, true],
+    [0.3, true],
+  ]) {
+    const next = attempt(graph, Math.min(width * factor, 230), width, theme, tight)
     if (!result || next.bbox.width < result.bbox.width) result = next
     if (next.bbox.width <= avail) {
       result = next

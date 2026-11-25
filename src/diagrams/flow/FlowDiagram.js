@@ -43,7 +43,7 @@ function renderFlow({ boxes, edges, scale, offsetX, offsetY }, theme) {
         edge.labelPos ? (
           <TextLines
             key={`l${index}`}
-            lines={[edge.label]}
+            lines={edge.labelLines}
             x={edge.labelPos.x}
             y={edge.labelPos.y}
             anchor={edge.labelPos.anchor}
