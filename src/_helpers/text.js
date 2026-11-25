@@ -70,6 +70,29 @@ function breakWord(word, maxWidth, fontSize, weight) {
   return parts
 }
 
+function dashSegments(word) {
+  return word.split(/(?<=[\p{L}\p{N}][-–—])(?=[\p{L}\p{N}])/u)
+}
+
+function placeLongWord(word, lines, maxWidth, fontSize, weight) {
+  let current = ''
+  for (const segment of dashSegments(word)) {
+    if (textWidth(current + segment, fontSize, weight) <= maxWidth) {
+      current += segment
+      continue
+    }
+    if (current) lines.push(current)
+    if (textWidth(segment, fontSize, weight) <= maxWidth) {
+      current = segment
+      continue
+    }
+    const pieces = breakWord(segment, maxWidth, fontSize, weight)
+    lines.push(...pieces.slice(0, -1))
+    current = pieces[pieces.length - 1] || ''
+  }
+  return current
+}
+
 function clampLines(lines, maxLines, maxWidth, fontSize, weight) {
   if (!maxLines || lines.length <= maxLines) return lines
   const kept = lines.slice(0, maxLines)
@@ -98,9 +121,7 @@ export function wrapText(text, maxWidth, fontSize, weight = 400, maxLines) {
           current = word
           return
         }
-        const pieces = breakWord(word, maxWidth, fontSize, weight)
-        lines.push(...pieces.slice(0, -1))
-        current = pieces[pieces.length - 1] || ''
+        current = placeLongWord(word, lines, maxWidth, fontSize, weight)
       })
       if (current) lines.push(current)
     })
