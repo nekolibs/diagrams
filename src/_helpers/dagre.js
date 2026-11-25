@@ -29,8 +29,8 @@ export function runDagre({ nodes, edges, rankdir = 'TB', nodesep = 20, ranksep =
 
   const positions = {}
   nodes.forEach((node) => {
-    const { x, y } = g.node(node.id)
-    positions[node.id] = { x, y }
+    const { x, y, rank } = g.node(node.id)
+    positions[node.id] = { x, y, rank }
   })
   const routes = edges.map((edge, index) => {
     const data = g.edge(edge.from, edge.to, `e${index}`) || {}
